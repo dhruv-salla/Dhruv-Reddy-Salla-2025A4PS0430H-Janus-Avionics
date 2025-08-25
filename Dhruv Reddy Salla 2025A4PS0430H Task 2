@@ -1,0 +1,173 @@
+int framerate = 10;
+int sensor = 0;
+
+float prev_pressure = 0.0f;
+float new_pressure = 0.0f;
+float filtered_pressure = 0.0f;
+float ground_pressure = 0.0f;
+
+float ground_altitude = 0.0f;
+float prev_altitude = 0.0f;
+float new_altitude = 0.0f;
+float new_velocity = 0.0f;
+float prev_velocity = 0.0f;
+
+
+// finding median
+int median5(int *arr) {
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 4 - i; j++) {
+      if (arr[j] > arr[j + 1]) {
+        int temp = arr[j];
+        arr[j] = arr[j + 1];
+        arr[j + 1] = temp;
+      }
+    }
+  }
+  return arr[2];
+}
+
+// calculating pressure from sensor output
+const float area = 0.01f;
+int buffer[5];
+int buffer_delay = 1000 / (framerate * 5);
+
+float sensor_to_pressure() {
+  for (int t = 0; t<5; t++) {
+    buffer[t] = analogRead(A0);
+    delay(buffer_delay);
+  }
+  sensor = median5(buffer);
+  float force = 0.0000414f * pow(sensor, 2.01);
+  float pressure = force / area;
+  return pressure;
+}
+
+// calculating altitude from pressure
+const float air_density = 1.225f;
+const float g = 9.81f;
+const float inv_dg = 1.0f/(air_density * g); 
+
+float pressure_to_altitude(float pressure) {
+  float altitude = (ground_pressure - pressure) * inv_dg;
+  return altitude;
+}
+
+
+// checking if rocket launched
+bool launch = false;
+int launch_count = 0;
+void check_launch(float altitude) {
+  if (altitude > ground_altitude + 2.0f) {
+    launch_count += 1;
+  }
+  if (launch_count > 1) { //og=3 scaled=1
+    launch = true;
+  }
+}
+
+// checking if rocket reached apogee
+bool apogee = false;
+int negative_count = 0;
+void check_apogee(float v) {
+  if (v > 0.0f) {
+    negative_count = 0;
+  } else if (v < -0.1f) {
+    negative_count += 1;
+  }
+  if (negative_count > 1) { //og=3 scaled=1
+    apogee = true;
+  }
+}
+
+
+bool started = false;
+void setup()
+{
+  pinMode(A0, INPUT);
+  pinMode(8, OUTPUT);
+  pinMode(10, OUTPUT);
+  pinMode(12, OUTPUT);
+  pinMode(13, OUTPUT);
+  Serial.begin(9600);
+  
+  digitalWrite(8, LOW);
+  digitalWrite(10, LOW);
+  digitalWrite(12, LOW);
+  
+  // checks if max force is applied before starting the program
+  while (!started) {
+    sensor = analogRead(A0);
+    if (sensor >= 466) {
+      started = true;
+    } else {
+      delay(1000 / framerate);
+    }
+  }
+  
+  
+  //getting ground pressure
+  float sum = 0.0f;
+  for (int i = 0; i<5; i++) {
+    sum += sensor_to_pressure();
+  }
+  ground_pressure = sum/5.0f;
+  prev_pressure = ground_pressure;
+  ground_altitude = pressure_to_altitude(ground_pressure);
+  prev_altitude = ground_altitude;
+}
+
+bool descent = false;
+void loop()
+{
+  new_pressure = sensor_to_pressure();
+  
+  // smoothing pressure (low pass ema)
+  filtered_pressure = (new_pressure * 0.75f) + (prev_pressure * (1.0f - 0.75f));
+  
+  prev_pressure = filtered_pressure;
+  new_altitude = pressure_to_altitude(filtered_pressure);
+  
+  // differentiating altitude
+  new_velocity = (new_altitude - prev_altitude) *(framerate);
+
+  
+  if (!launch && !apogee && !descent) {
+     //prelaunch
+    Serial.println("On Pad");
+    check_launch(new_altitude);
+    
+  } else if (launch && !apogee && !descent) {
+     // ascent
+    digitalWrite(8, HIGH);
+    digitalWrite(10, LOW);
+    digitalWrite(12, LOW);
+    check_apogee(new_velocity);
+    Serial.println("Ascent");
+    
+  } else if (launch && apogee && !descent) {
+     // apogee
+    digitalWrite(8, LOW);
+    digitalWrite(10, HIGH);
+    digitalWrite(12, LOW);
+    tone(13, 520, 200);
+    descent = true;
+    Serial.println("Apogee");
+    
+  } else if (launch && apogee && descent) {
+     // descent
+    digitalWrite(8, LOW);
+    digitalWrite(10, LOW);
+    digitalWrite(12, HIGH);
+    Serial.println("Descent");
+  }
+  
+  prev_altitude = new_altitude;
+  prev_velocity = new_velocity;
+  Serial.print("Sensor: ");
+  Serial.println(sensor);
+  Serial.print("Altitude: ");
+  Serial.println(new_altitude);
+  Serial.print("Velocity: ");
+  Serial.println(new_velocity);
+}
